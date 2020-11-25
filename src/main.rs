@@ -211,6 +211,45 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize) {
             state.cc.cy = (hl & 0xffff0000) > 0;
         },
 
+        // LHLD adr
+        0x2a => {
+            let offset: usize = (usize::from(state.memory[pc + 2]) << 8) | usize::from(state.memory[pc + 1]);
+            state.l = state.memory[offset];
+            state.h = state.memory[offset + 1];
+            state.pc += 2;
+        },
+
+        // DCX H
+        0x2b => {
+            state.l -= 1;
+            if state.l == 0xff { state.h -= 1; }
+        },
+
+        // INR L
+        0x2c => {
+            state.l += 1;
+            state.cc.z = state.l == 0;
+            state.cc.s = (state.l & 0x80) != 0;
+            state.cc.p = parity(state.l);
+        },
+
+        // MVI L,D8
+        0x2e => {
+            state.l = state.memory[pc + 1];
+            state.pc += 1;
+        }
+
+        // CMA (not)
+        0x2f => {
+            state.a = !state.a;
+        }
+
+        // LXI SP,word
+        0x31 => {
+            state.sp = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
+            state.pc += 2;
+        }
+
         // JMP adress
         0xc3 => state.pc= (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]),
         _ => unimplemented_instruction(),
