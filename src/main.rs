@@ -92,13 +92,13 @@ fn main() {
         if state.int_enable {
             generate_interrupt(&mut state, &mut interrupt_type);
             interrupt_type = !interrupt_type;
+            i+=1;
+            println!("Interrup No: {}", i);
         }
         cycles = 0;
 
-        i+=1;
-        println!("Interrup No: {}", i);
         //if i > 100 { break; }
-        //if total_instructions > 1000 { break; }
+        if total_instructions > 44000 { break; }
     }
     for (i,item) in state.memory[0x2400..=0x3fff].iter().enumerate() {
         println!("{:x?} {:x?}", 0x2400+i, item);
@@ -109,8 +109,10 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
     let opcode: u8 = state.memory[usize::from(state.pc)];
     *cycles += usize::from(CYCLES[usize::from(opcode)]);
     let pc: usize = usize::from(state.pc);
-    //println!("Instruction: {} Opcode: {:x?} PC: {:x?}", total_instructions, opcode, pc);
+    println!("Instruction: {} Opcode: {:x?} PC: {:x?}", total_instructions, opcode, pc);
     state.pc += 1;
+
+    let mut memory = state.memory.clone();
 
     match opcode {
         // NOP
@@ -318,7 +320,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x035 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
             state.memory[offset] = state.memory[offset].wrapping_sub(1);
-            state.c = state.memory[offset];
+            //state.c = state.memory[offset];
             state.cc.z = state.memory[offset] == 0;
             state.cc.s = (state.memory[offset] & 0x80) != 0;
             state.cc.p = parity(state.memory[offset]);
@@ -896,6 +898,12 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         _ => {unimplemented_instruction(opcode, pc)},
     }
+    for (i,item) in state.memory[0..0x3ff].iter().enumerate() {
+        if state.memory[i] != memory[i] {
+            println!("memory at addr: {:x?} changed {:x?} -> {:x?}", i, memory[i], state.memory[i]);
+        }
+    }
+
 }
 
 fn parity(x: u8) -> bool {
