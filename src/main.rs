@@ -6,6 +6,9 @@ use minifb::{Window, ScaleMode, WindowOptions};
 use std::io::prelude::*;
 use std::fs::File;
 use std::process;
+use std::num::Wrapping;
+
+
 
 const SCREEN_WIDTH: usize = 224;
 const SCREEN_HEIGHT: usize = 256;
@@ -48,15 +51,17 @@ fn main() {
     .unwrap_or_else(|e| {
         panic!("{}", e);
     });
-    window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
+    //window.limit_update_rate(Some(std::time::Duration::from_millis(8)));
 
     let mut i: usize = 0;
     let mut cycles: usize = 0;
     let mut interrupt_type: bool = false;
+    let mut total_instructions: usize = 0;
 
     loop {
         while cycles <= CYCLES_PER_FRAME / 2 {
-            emulate_instruction(&mut state, &mut cycles, &mut special);
+            emulate_instruction(&mut state, &mut cycles, &mut special, &mut total_instructions);
+            total_instructions += 1;
         }
 
         //render here
@@ -65,13 +70,17 @@ fn main() {
         let mut buffer: Vec<u32> = vec![0; SCREEN_WIDTH * SCREEN_HEIGHT];
         for (i, item) in state.memory[0x2400..=0x3fff].iter().enumerate() {
             for shift in 0..=7 {
+                //let pixel = (0b10101010 & (0x1 << shift)) != 0; //random
                 let pixel = (*item & (0x1 << shift)) != 0;
                 //let pixel = ((*item >> shift) & 1) == 1;
                 if pixel {
-                    buffer[i * 8 + shift] = 0x00ffffff;
+                    buffer[(i * 8) + shift] = 0x00ffffff;
                 } else {
-                    buffer[i * 8 + shift] = 0x0ff00ff;
+                    buffer[(i * 8) + shift] = 0x00ff0000;
                 }
+            }
+            if *item != 0 {
+                println!("pixel: {:x?}", item);
             }
         }
         window.update_with_buffer(&buffer, SCREEN_WIDTH, SCREEN_HEIGHT).unwrap_or_else(|e| {
@@ -82,23 +91,25 @@ fn main() {
 
         if state.int_enable {
             generate_interrupt(&mut state, &mut interrupt_type);
+            interrupt_type = !interrupt_type;
         }
         cycles = 0;
 
         i+=1;
         println!("Interrup No: {}", i);
-        if i > 100 { break; }
+        //if i > 100 { break; }
+        //if total_instructions > 1000 { break; }
     }
     for (i,item) in state.memory[0x2400..=0x3fff].iter().enumerate() {
         println!("{:x?} {:x?}", 0x2400+i, item);
     }
 }
 
-fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut Special) {
+fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut Special, total_instructions: &mut usize) {
     let opcode: u8 = state.memory[usize::from(state.pc)];
     *cycles += usize::from(CYCLES[usize::from(opcode)]);
     let pc: usize = usize::from(state.pc);
-    //println!("Opcode: {:x?} PC: {:x?}", opcode, pc);
+    //println!("Instruction: {} Opcode: {:x?} PC: {:x?}", total_instructions, opcode, pc);
     state.pc += 1;
 
     match opcode {
@@ -116,13 +127,13 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // INX B
         0x03 => {
-            state.c += 1;
-            if state.c == 0 {state.b += 1;}
+            state.c = state.c.wrapping_add(1);
+            if state.c == 0 {state.b = state.b.wrapping_add(1);}
         },
 
         // INR B
         0x04 => {
-            let result = state.b + 1;
+            let result = state.b.wrapping_add(1);
             state.cc.z = (result & 0xff) == 0;
             state.cc.s = (result & 0x80) != 0;
             state.cc.p = parity(result & 0xff);
@@ -165,7 +176,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // DCR C
         0x0d => {
-            state.c -= 1;
+            state.c = state.c.wrapping_sub(1);
             state.cc.z = state.c == 0;
             state.cc.s = (state.c & 0x80) != 0;
             state.cc.p = parity(state.c);
@@ -192,8 +203,9 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // INX D
         0x13 => {
-            state.e += 1;
-            if state.e == 0 { state.d = 1; }
+            //println!("INX D before: {:x?}", state.e);
+            state.e = state.e.wrapping_add(1);
+            if state.e == 0 { state.d = state.d.wrapping_add(1); }
         },
 
         // MVI D,D8
@@ -239,7 +251,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         // INX H
         0x23 => {
             state.l = state.l.wrapping_add(1);
-            if state.l == 0 { state.h += 1; }
+            if state.l == 0 { state.h = state.h.wrapping_add(1); }
         },
 
         // MVI H
@@ -266,13 +278,13 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // DCX H
         0x2b => {
-            state.l -= 1;
-            if state.l == 0xff { state.h -= 1; }
+            state.l = state.l.wrapping_sub(1);
+            if state.l == 0xff { state.h = state.h.wrapping_sub(1); }
         },
 
         // INR L
         0x2c => {
-            state.l += 1;
+            state.l = state.l.wrapping_add(1);
             state.cc.z = state.l == 0;
             state.cc.s = (state.l & 0x80) != 0;
             state.cc.p = parity(state.l);
@@ -305,7 +317,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         // DCR M
         0x035 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
-            state.memory[offset] -= 1;
+            state.memory[offset] = state.memory[offset].wrapping_sub(1);
             state.c = state.memory[offset];
             state.cc.z = state.memory[offset] == 0;
             state.cc.s = (state.memory[offset] & 0x80) != 0;
@@ -333,7 +345,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // DCR A
         0x3d => {
-            state.a -= 1;
+            state.a = state.a.wrapping_sub(1);
             state.cc.z = state.a == 0;
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.p = parity(state.a);
@@ -481,7 +493,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x80 => {
             let result: u16 = u16::from(state.a) + u16::from(state.b);
             state.cc.cy = result > 0xff;
-            state.a += state.b;
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
             state.cc.p = parity(state.a);
@@ -491,7 +503,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x81 => {
             let result: u16 = u16::from(state.a) + u16::from(state.c);
             state.cc.cy = result > 0xff;
-            state.a += state.c;
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
             state.cc.p = parity(state.a);
@@ -501,7 +513,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x82 => {
             let result: u16 = u16::from(state.a) + u16::from(state.d);
             state.cc.cy = result > 0xff;
-            state.a += state.d;
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
             state.cc.p = parity(state.a);
@@ -511,7 +523,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x83 => {
             let result: u16 = u16::from(state.a) + u16::from(state.e);
             state.cc.cy = result > 0xff;
-            state.a += state.e;
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
             state.cc.p = parity(state.a);
@@ -521,7 +533,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x84 => {
             let result: u16 = u16::from(state.a) + u16::from(state.h);
             state.cc.cy = result > 0xff;
-            state.a += state.h;
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
             state.cc.p = parity(state.a);
@@ -531,7 +543,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x85 => {
             let result: u16 = u16::from(state.a) + u16::from(state.l);
             state.cc.cy = result > 0xff;
-            state.a += state.l;
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
             state.cc.p = parity(state.a);
@@ -542,7 +554,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
             let result: u16 = u16::from(state.a) + u16::from(state.memory[offset]);
             state.cc.cy = result > 0xff;
-            state.a += state.memory[offset];
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
             state.cc.p = parity(state.a);
@@ -552,7 +564,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x87 => {
             let result: u16 = u16::from(state.a) * 2;
             state.cc.cy = result > 0xff;
-            state.a += state.b;
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
             state.cc.p = parity(state.a);
@@ -563,6 +575,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             state.cc.z = state.a == 0;
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.p = parity(state.a);
+            state.cc.cy = false;
         },
 
         // XRA A
@@ -651,7 +664,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             let offset = usize::from(pc + 1);
             let result: u16 = u16::from(state.a) + u16::from(state.memory[offset]);
             state.cc.cy = result > 0xff;
-            state.a += state.memory[offset];
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.p = parity(state.a);
@@ -738,7 +751,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             let offset = usize::from(pc + 1);
             let result: u16 = u16::from(state.a) - u16::from(state.memory[offset]);
             state.cc.cy = result > 0xff;
-            state.a -= state.memory[offset];
+            state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.p = parity(state.a);
@@ -821,6 +834,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         },
 
         // POP PSW
+        //TODO : ÜBERPRÜFEN!
         0xf1 => {
             let sp = usize::from(state.sp);
             state.a = state.memory[sp + 1];
@@ -869,9 +883,9 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         //CPI D8
         0xfe => {
-            let result = u16::from(state.a) - u16::from(state.memory[pc + 1]);
+            let result = u16::from(state.a).wrapping_sub(u16::from(state.memory[pc + 1]));
             state.cc.cy = result > 0xff;
-            let result = state.a - state.memory[pc + 1];
+            let result = state.a.wrapping_sub(state.memory[pc + 1]);
             state.cc.z = result == 0;
             state.cc.s = (result & 0x80) != 0;
             state.cc.p = parity(result);
@@ -904,6 +918,22 @@ fn generate_interrupt(state: &mut State8080, interrupt_type: &mut bool) {
     state.pc = 8*(*interrupt_type as u16);
     state.int_enable = false;
 }
+
+/*fn wrapping_add(x1: &mut u8, x2: &mut u8) -> u8 {
+    return (usize::from(*x1) + usize::from(*x2)) as u8;
+}
+
+fn wrapping_sub(x1: &mut u8, x2: &mut u8) -> u8 {
+    return ((0x100 & usize::from(*x1)) - usize::from(*x2)) as u8;
+}
+
+fn wrapping_add_u16(x1: &mut u16, x2: &mut u16) -> u16 {
+    return (usize::from(*x1) + usize::from(*x2)) as u16;
+}
+
+fn wrapping_sub_u16(x1: &mut u16, x2: &mut u16) -> u16 {
+    return ((0x10000 & usize::from(*x1)) - usize::from(*x2)) as u16;
+} */
 
 struct ConditionCodes {
     z: bool,
