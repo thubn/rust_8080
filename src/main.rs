@@ -1,8 +1,12 @@
 #[allow(dead_code)]
 
-mod render;
+//mod render;
+mod cpu;
 
-use minifb::{Window, ScaleMode, WindowOptions};
+pub use crate::cpu::instructions;
+pub use crate::cpu::State8080;
+
+use minifb::{Window, /*ScaleMode,*/ WindowOptions};
 use std::io::prelude::*;
 use std::fs::File;
 use std::process;
@@ -16,11 +20,12 @@ const NUM_PIXELS: usize = SCREEN_HEIGHT * SCREEN_WIDTH;
 
 
 fn main() {
-    static CYCLES_PER_FRAME: usize = 2_000_000 / 60;
+    //2MHz with two interrupts for each frame on 60Hz screen
+    static CYCLES_PER_FRAME: usize = 2_000_000 / 120;
 
 
-    let condition = ConditionCodes {z:false, s:false, p:false, cy:false, ac:false, pad:0};
-    let mut state = State8080 {a:0, b:0, c:0, d:0, e:0, h:0, l:0, sp:0, pc:0, memory:[0;16384],cc:condition, int_enable:false};
+    let condition = State8080::ConditionCodes {z:false, s:false, p:false, cy:false, ac:false, pad:0};
+    let mut state = State8080::State8080 {a:0, b:0, c:0, d:0, e:0, h:0, l:0, sp:0, pc:0, memory:[0;16384],cc:condition, int_enable:false};
     let mut special = Special{shift_offset:0, shift0:0, shift1:0};
 
     let mut invadersh = File::open("invaders.h").expect("no such file");
@@ -35,12 +40,6 @@ fn main() {
     let mut invaderse = File::open("invaders.e").expect("no such file");
     invaderse.read(&mut state.memory[0x1800..0x1fff]).expect("error reading into emulated memory");
 
-    //Test if file is read correctly
-    let test: u16 = 0xff00;
-    let u8test: u8 = test.to_be_bytes()[1];
-    println!("{:x?}", u8test);
-    println!("{:x?} {:x?} {:x?} {:x?}", state.memory[0], state.memory[1], state.memory[2], state.memory[3]);
-
 
     let mut window = Window::new(
         "8080",
@@ -51,6 +50,7 @@ fn main() {
     .unwrap_or_else(|e| {
         panic!("{}", e);
     });
+
     window.limit_update_rate(Some(std::time::Duration::from_millis(4)));
 
     let mut i: usize = 0;
@@ -65,7 +65,6 @@ fn main() {
         }
 
         let mut buffer: Vec<u32> = vec![0; NUM_PIXELS];
-
         let mut j = 0;
         for row in (0x2400..=0x241f).rev() {
             for b in (0..=7).rev() {
@@ -112,58 +111,48 @@ fn main() {
     } */
 }
 
-fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut Special, total_instructions: &mut usize) {
+fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, special: &mut Special, total_instructions: &mut usize) {
     let opcode: u8 = state.memory[usize::from(state.pc)];
     *cycles += usize::from(CYCLES[usize::from(opcode)]);
     let pc: usize = usize::from(state.pc);
     println!("Instruction: {} op: {:x?} pc:{:x?}", total_instructions, opcode, pc);
     println!("a:{:x?} bc:{:x?}{:x?} de:{:x?}{:x?} hl:{:x?}{:x?} sp:{:x?}", state.a, state.b, state.c, state.d, state.e, state.h, state.l, state.sp);
     println!("cycles:{}", *cycles);
-    state.pc += 1;
+
+    //state.pc += 1;
+    state.pc += SIZE[usize::from(opcode)] as u16;
 
     //let memory = state.memory.clone();
 
     match opcode {
         // NOP
-        0x00 => (),
+        0x00 => instructions::nop(),
 
         // LXI B, word
         0x01 => {
-            state.c = state.memory[pc+1];
-            state.b = state.memory[pc+2];
-            state.pc = state.pc + 2;
+            instructions::lxi(&mut state.b, &mut state.c, &pc, &state.memory);
         },
 
         //0x02 => unimplemented_instruction(),
 
         // INX B
         0x03 => {
-            state.c = state.c.wrapping_add(1);
-            if state.c == 0 {state.b = state.b.wrapping_add(1);}
+            instructions::inx(&mut state.b, &mut state.c);
         },
 
         // INR B
         0x04 => {
-            let result = state.b.wrapping_add(1);
-            state.cc.z = (result & 0xff) == 0;
-            state.cc.s = (result & 0x80) != 0;
-            state.cc.p = parity(result & 0xff);
-            state.b = result & 0xff;
+            instructions::inr(&mut state.b, &mut state.cc);
         },
 
         // DCR B
         0x05 => {
-            let result = state.b.wrapping_sub(1);
-            state.cc.z = (result & 0xff) == 0;
-            state.cc.s = (result & 0x80) != 0;
-            state.cc.p = parity(result & 0xff);
-            state.b = result & 0xff;
+            instructions::dcr(&mut state.b, &mut state.cc);
         },
 
         // MVI B
         0x06 => {
-            state.b = state.memory[pc + 1];
-            state.pc += 1;
+            instructions::mvi(&mut state.b, &mut state.memory, &pc);
         },
 
         // RLC
@@ -173,30 +162,22 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // DAD B
         0x09 => {
-            let hl: u32 = ((u32::from(state.h) << 8) | u32::from(state.l)) + ((u32::from(state.b) << 8) | u32::from(state.c));
-            state.h = hl.to_be_bytes()[2];
-            state.l = hl.to_be_bytes()[3];
-            state.cc.cy = (hl & 0xffff0000) > 0;
+            instructions::dad(&mut state.h, &mut state.l, &state.b, &state.c, &mut state.cc);
         },
 
         // LDAX B
         0x0a => {
-            let offset: usize = (usize::from(state.b) << 8) | usize::from(state.c);
-            state.a = state.memory[offset];
+            instructions::ldax(&mut state.a, &state.b, &state.c, &state.memory);
         },
 
         // DCR C
         0x0d => {
-            state.c = state.c.wrapping_sub(1);
-            state.cc.z = state.c == 0;
-            state.cc.s = (state.c & 0x80) != 0;
-            state.cc.p = parity(state.c);
+            instructions::dcr(&mut state.c, &mut state.cc);
         },
 
         // MVI C
         0x0e => {
-            state.c = state.memory[pc + 1];
-            state.pc +=1;
+            instructions::mvi(&mut state.c, &state.memory, &pc);
         },
 
         // RRC
@@ -207,42 +188,32 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // LXI D,word
         0x11 => {
-            state.e = state.memory[pc + 1];
-            state.d = state.memory[pc + 2];
-            state.pc += 2;
+            instructions::lxi(&mut state.d, &mut state.e, &pc, &state.memory);
         },
 
         // STAX D
         0x12 => {
-            let offset: usize = (usize::from(state.d) << 8) | usize::from(state.e);
-            state.memory[offset] = state.a;
+            instructions::stax(&state.a, &state.d, &state.e, &mut state.memory);
         },
 
         // INX D
         0x13 => {
-            //println!("INX D before: {:x?}", state.e);
-            state.e = state.e.wrapping_add(1);
-            if state.e == 0 { state.d = state.d.wrapping_add(1); }
+            instructions::inx(&mut state.d, &mut state.e);
         },
 
         // MVI D,D8
         0x16 => {
-            state.d = state.memory[pc + 1];
-            state.pc += 1;
+            instructions::mvi(&mut state.d, &state.memory, &pc);
         },
 
         // DAD D
         0x19 => {
-            let hl: u32 = (u32::from(state.h) << 8 | u32::from(state.l)) + (u32::from(state.d) << 8 | u32::from(state.e));
-            state.h = hl.to_be_bytes()[2];
-            state.l = hl.to_be_bytes()[3];
-            state.cc.cy = (hl & 0xffff0000) > 0;
+            instructions::dad(&mut state.h, &mut state.l, &state.d, &state.e, &mut state.cc);
         },
 
         // LDAX D
         0x1a => {
-            let offset: usize = (usize::from(state.d) << 8) | usize::from(state.e);
-            state.a = state.memory[offset];
+            instructions::ldax(&mut state.a, &state.d, &state.e, &state.memory);
         },
 
         // RAR
@@ -260,29 +231,24 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // LXI H,word
         0x21 => {
-            state.l = state.memory[pc + 1];
-            state.h = state.memory[pc + 2];
-            state.pc += 2;
+            instructions::lxi(&mut state.h, &mut state.l, &pc, &state.memory);
         },
 
         // INX H
         0x23 => {
-            state.l = state.l.wrapping_add(1);
-            if state.l == 0 { state.h = state.h.wrapping_add(1); }
+            instructions::inx(&mut state.h, &mut state.l);
         },
 
         // MVI H
         0x26 => {
-            state.h = state.memory[pc + 1];
-            state.pc += 1;
+            instructions::mvi(&mut state.h, &state.memory, &pc);
         },
 
         // DAD H
         0x29 => {
-            let hl: u32 = (u32::from(state.h) << 8 | u32::from(state.l)) * 2;
-            state.h = hl.to_be_bytes()[2];
-            state.l = hl.to_be_bytes()[3];
-            state.cc.cy = (hl & 0xffff0000) > 0;
+            let h = state.h;
+            let l = state.l;
+            instructions::dad(&mut state.h, &mut state.l, &h, &l, &mut state.cc);
         },
 
         // LHLD adr
@@ -290,27 +256,21 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             let offset: usize = (usize::from(state.memory[pc + 2]) << 8) | usize::from(state.memory[pc + 1]);
             state.l = state.memory[offset];
             state.h = state.memory[offset + 1];
-            state.pc += 2;
         },
 
         // DCX H
         0x2b => {
-            state.l = state.l.wrapping_sub(1);
-            if state.l == 0xff { state.h = state.h.wrapping_sub(1); }
+            instructions::dcx(&mut state.h, &mut state.l);
         },
 
         // INR L
         0x2c => {
-            state.l = state.l.wrapping_add(1);
-            state.cc.z = state.l == 0;
-            state.cc.s = (state.l & 0x80) != 0;
-            state.cc.p = parity(state.l);
+            instructions::inr(&mut state.l, &mut state.cc);
         },
 
         // MVI L,D8
         0x2e => {
-            state.l = state.memory[pc + 1];
-            state.pc += 1;
+            instructions::mvi(&mut state.l, &state.memory, &pc);
         },
 
         // CMA (not)
@@ -320,22 +280,20 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // LXI SP,word
         0x31 => {
+            //instructions::lxi(&mut state.sp.to_be_bytes()[0], &mut state.sp.to_be_bytes()[0], &pc, &state.memory);
             state.sp = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
-            state.pc += 2;
         },
 
         // STA adr
         0x32 => {
             let offset = (usize::from(state.memory[pc + 2]) << 8) | usize::from(state.memory[pc]);
             state.memory[offset] = state.a;
-            state.pc += 2;
         },
 
         // DCR M
         0x035 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
             state.memory[offset] = state.memory[offset].wrapping_sub(1);
-            //state.c = state.memory[offset];
             state.cc.z = state.memory[offset] == 0;
             state.cc.s = (state.memory[offset] & 0x80) != 0;
             state.cc.p = parity(state.memory[offset]);
@@ -345,7 +303,6 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x36 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
             state.memory[offset] = state.memory[pc + 1];
-            state.pc += 1;
         },
 
         // STC
@@ -357,21 +314,16 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0x3a => {
             let offset = usize::from(state.memory[pc + 2]) << 8 | usize::from(state.memory[pc + 1]);
             state.a = state.memory[offset];
-            state.pc += 2;
         },
 
         // DCR A
         0x3d => {
-            state.a = state.a.wrapping_sub(1);
-            state.cc.z = state.a == 0;
-            state.cc.s = (state.a & 0x80) != 0;
-            state.cc.p = parity(state.a);
+            instructions::dcr(&mut state.a, &mut state.cc);
         },
 
         // MVI A,D8
         0x3e => {
-            state.a = state.memory[pc + 1];
-            state.pc += 1;
+            instructions::mvi(&mut state.a, &state.memory, &pc);
         },
 
         // CMC
@@ -380,9 +332,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         },
 
         // MOV B,B
-        0x40 => {
-            ()
-        },
+        0x40 => (),
 
         // MOV B,C
         0x41 => {
@@ -508,62 +458,32 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // ADD B
         0x80 => {
-            let result: u16 = u16::from(state.a) + u16::from(state.b);
-            state.cc.cy = result > 0xff;
-            state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);
+            instructions::add(&mut state.a, &state.b, &mut state.cc);
         },
 
         // ADD C
         0x81 => {
-            let result: u16 = u16::from(state.a) + u16::from(state.c);
-            state.cc.cy = result > 0xff;
-            state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);
+            instructions::add(&mut state.a, &state.c, &mut state.cc);
         },
 
         // ADD D
         0x82 => {
-            let result: u16 = u16::from(state.a) + u16::from(state.d);
-            state.cc.cy = result > 0xff;
-            state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);
+            instructions::add(&mut state.a, &state.d, &mut state.cc);
         },
 
         // ADD E
         0x83 => {
-            let result: u16 = u16::from(state.a) + u16::from(state.e);
-            state.cc.cy = result > 0xff;
-            state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);
+            instructions::add(&mut state.a, &state.e, &mut state.cc);
         },
 
         // ADD H
         0x84 => {
-            let result: u16 = u16::from(state.a) + u16::from(state.h);
-            state.cc.cy = result > 0xff;
-            state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);
+            instructions::add(&mut state.a, &state.h, &mut state.cc);
         },
 
         // ADD L
         0x85 => {
-            let result: u16 = u16::from(state.a) + u16::from(state.l);
-            state.cc.cy = result > 0xff;
-            state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);
+            instructions::add(&mut state.a, &state.l, &mut state.cc);
         },
 
         // ADD M
@@ -579,38 +499,25 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // ADD A
         0x87 => {
-            let result: u16 = u16::from(state.a) * 2;
-            state.cc.cy = result > 0xff;
-            state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);
+            let a = state.a;
+            instructions::add(&mut state.a, &a, &mut state.cc);
         },
 
         // ANA A
         0xa7 => {
-            state.cc.z = state.a == 0;
-            state.cc.s = (state.a & 0x80) != 0;
-            state.cc.p = parity(state.a);
-            state.cc.cy = false;
+            let a = state.a;
+            instructions::ana(&mut state.a, &a, &mut state.cc);
         },
 
         // XRA A
         0xaf => {
-            state.a = 0x0;
-            state.cc.z = true;
-            state.cc.s = false;
-            state.cc.cy = false;
-            state.cc.p = true;
+            let a = state.a;
+            instructions::xra(&mut state.a, &a, &mut state.cc);
         },
 
         // ORA B
         0xb0 => {
-            state.a = state.a | state.b;
-            state.cc.z = state.a == 0;
-            state.cc.s = (state.a & 0x80) != 0;
-            state.cc.cy = false;
-            state.cc.p = parity(state.a);
+            instructions::ora(&mut state.a, &state.b, &mut state.cc);
         },
 
         // ORA M
@@ -646,9 +553,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0xc2 => {
             if !state.cc.z {
                 state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
-            } else {
-                state.pc += 2;
-            }
+            } else {}
         },
 
         // JMP adr
@@ -666,7 +571,6 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
                 state.sp -= 2;
                 state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
             } else {
-                state.pc += 2;
                 *cycles -= 6;
             }
         },
@@ -688,7 +592,6 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             state.cc.z = state.a == 0;
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.p = parity(state.a);
-            state.pc += 1;
         },
 
         // RZ
@@ -713,15 +616,13 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0xca => {
             if state.cc.z {
                 state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
-            } else {
-                state.pc += 2;
-            }
+            } else {}
         },
 
         // CALL adr
         0xcd => {
             let sp: usize = usize::from(state.sp);
-            let ret = state.pc + 2;
+            let ret = state.pc;
             state.memory[sp - 1] = ret.to_be_bytes()[0];
             state.memory[sp - 2] = ret.to_be_bytes()[1];
             state.sp -= 2;
@@ -751,15 +652,12 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0xd2 => {
             if !state.cc.cy {
                 state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
-            } else {
-                state.pc += 2;
-            }
+            } else {}
         },
 
         // OUT D8
         0xd3 => {
             special.machine_out(&state.a, &state.memory[pc+1]);
-            state.pc += 1;
         },
 
         // PUSH D
@@ -780,7 +678,6 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             state.cc.z = state.a == 0;
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.p = parity(state.a);
-            state.pc += 1;
         },
 
         // RC
@@ -798,15 +695,12 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         0xda => {
             if state.cc.cy {
                 state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
-            } else {
-                state.pc += 2;
-            }
+            } else {}
         },
 
         // IN D8
         0xdb => {
             state.a = special.machine_in(&state.memory[pc+1], state);
-            state.pc += 1;
         },
 
         // POP H
@@ -842,7 +736,6 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.p = parity(state.a);
             state.cc.cy = false;
-            state.pc += 1;
         },
 
         // PCHL
@@ -895,7 +788,6 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.cy = false;
             state.cc.p = parity(state.a);
-            state.pc += 1;
         },
 
         // SPHL
@@ -918,7 +810,6 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             state.cc.z = result == 0;
             state.cc.s = (result & 0x80) != 0;
             state.cc.p = parity(result);
-            state.pc += 1;
         },
 
 
@@ -951,7 +842,7 @@ fn unimplemented_instruction(opcode: u8, pc: usize) {
     process::exit(0x0);
 }
 
-fn generate_interrupt(state: &mut State8080, interrupt_type: &mut bool) {
+fn generate_interrupt(state: &mut State8080::State8080, interrupt_type: &mut bool) {
     state.memory[usize::from(state.sp) - 1] = state.pc.to_be_bytes()[0];
     state.memory[usize::from(state.sp) - 2] = state.pc.to_be_bytes()[1];
     state.sp -= 2;
@@ -975,7 +866,7 @@ fn wrapping_sub_u16(x1: &mut u16, x2: &mut u16) -> u16 {
     return ((0x10000 & usize::from(*x1)) - usize::from(*x2)) as u16;
 } */
 
-struct ConditionCodes {
+/*struct ConditionCodes {
     z: bool,
     s: bool,
     p: bool,
@@ -984,7 +875,7 @@ struct ConditionCodes {
     pad: u8,
 }
 
-struct State8080 {
+pub struct State8080 {
     a: u8,
     b: u8,
     c: u8,
@@ -997,7 +888,7 @@ struct State8080 {
     memory: [u8;16384],
     cc: ConditionCodes,
     int_enable: bool,
-}
+} */
 
 struct Special {
     shift_offset: u8,
@@ -1017,7 +908,7 @@ impl Special{
             _ => (),
         }
     }
-    fn machine_in(&mut self, port: &u8, state: &State8080) -> u8 {
+    fn machine_in(&mut self, port: &u8, state: &State8080::State8080) -> u8 {
         let mut a: u8 = 0;
         match port {
             3 => {
@@ -1032,23 +923,46 @@ impl Special{
 }
 
 const CYCLES: [u8; 256] = [
-    4, 10, 7, 5, 5, 5, 7, 4, 4, 10, 7, 5, 5, 5, 7, 4,
-    4, 10, 7, 5, 5, 5, 7, 4, 4, 10, 7, 5, 5, 5, 7, 4,
-    4, 10, 16, 5, 5, 5, 7, 4, 4, 10, 16, 5, 5, 5, 7, 4,
-    4, 10, 13, 5, 10, 10, 10, 4, 4, 10, 13, 5, 5, 5, 7, 4,
+    4,  10, 7,  5,  5,  5,  7,  4,  4,  10, 7,  5,  5,  5,  7,  4,
+    4,  10, 7,  5,  5,  5,  7,  4,  4,  10, 7,  5,  5,  5,  7,  4,
+    4,  10, 16, 5,  5,  5,  7,  4,  4,  10, 16, 5,  5,  5,  7,  4,
+    4,  10, 13, 5,  10, 10, 10, 4,  4,  10, 13, 5,  5,  5,  7,  4,
 
-    5, 5, 5, 5, 5, 5, 7, 5, 5, 5, 5, 5, 5, 5, 7, 5,
-    5, 5, 5, 5, 5, 5, 7, 5, 5, 5, 5, 5, 5, 5, 7, 5,
-    5, 5, 5, 5, 5, 5, 7, 5, 5, 5, 5, 5, 5, 5, 7, 5,
-    7, 7, 7, 7, 7, 7, 7, 7, 5, 5, 5, 5, 5, 5, 7, 5,
+    5,  5,  5,  5,  5,  5,  7,  5,  5,  5,  5,  5,  5,  5,  7,  5,
+    5,  5,  5,  5,  5,  5,  7,  5,  5,  5,  5,  5,  5,  5,  7,  5,
+    5,  5,  5,  5,  5,  5,  7,  5,  5,  5,  5,  5,  5,  5,  7,  5,
+    7,  7,  7,  7,  7,  7,  7,  7,  5,  5,  5,  5,  5,  5,  7,  5,
 
-    4, 4, 4, 4, 4, 4, 7, 4, 4, 4, 4, 4, 4, 4, 7, 4,
-    4, 4, 4, 4, 4, 4, 7, 4, 4, 4, 4, 4, 4, 4, 7, 4,
-    4, 4, 4, 4, 4, 4, 7, 4, 4, 4, 4, 4, 4, 4, 7, 4,
-    4, 4, 4, 4, 4, 4, 7, 4, 4, 4, 4, 4, 4, 4, 7, 4,
+    4,  4,  4,  4,  4,  4,  7,  4,  4,  4,  4,  4,  4,  4,  7,  4,
+    4,  4,  4,  4,  4,  4,  7,  4,  4,  4,  4,  4,  4,  4,  7,  4,
+    4,  4,  4,  4,  4,  4,  7,  4,  4,  4,  4,  4,  4,  4,  7,  4,
+    4,  4,  4,  4,  4,  4,  7,  4,  4,  4,  4,  4,  4,  4,  7,  4,
 
-    11, 10, 10, 10, 17, 11, 7, 11, 11, 10, 10, 10, 17, 17, 7, 11,
-    11, 10, 10, 10, 17, 11, 7, 11, 11, 10, 10, 10, 17, 17, 7, 11,
-    11, 10, 10, 18, 17, 11, 7, 11, 11, 5, 10, 5, 17, 17, 7, 11,
-    11, 10, 10, 4, 17, 11, 7, 11, 11, 5, 10, 4, 17, 17, 7, 11
+    11, 10, 10, 10, 17, 11, 7,  11, 11, 10, 10, 10, 17, 17, 7,  11,
+    11, 10, 10, 10, 17, 11, 7,  11, 11, 10, 10, 10, 17, 17, 7,  11,
+    11, 10, 10, 18, 17, 11, 7,  11, 11, 5,  10, 5,  17, 17, 7,  11,
+    11, 10, 10, 4,  17, 11, 7,  11, 11, 5,  10, 4,  17, 17, 7,  11
+];
+
+const SIZE: [u8; 256] = [
+//  x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 xA xB xC xD xE xF
+    1, 3, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 2, 1, //0x
+    1, 3, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 2, 1, //1x
+    1, 3, 3, 1, 1, 1, 2, 1, 1, 1, 3, 1, 1, 1, 2, 1, //2x
+    1, 3, 3, 1, 1, 1, 2, 1, 1, 1, 3, 1, 1, 1, 2, 1, //3x
+
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //4x
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //5x
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //6x
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //7x
+
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //8x
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //9x
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //Ax
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //Bx
+
+    1, 1, 3, 3, 3, 1, 2, 1, 1, 1, 3, 3, 3, 3, 2, 1, //Cx
+    1, 1, 3, 2, 3, 1, 2, 1, 1, 1, 3, 2, 3, 3, 2, 1, //Dx
+    1, 1, 3, 1, 3, 1, 2, 1, 1, 1, 3, 1, 3, 3, 2, 1, //Ex
+    1, 1, 3, 1, 3, 1, 2, 1, 1, 1, 3, 1, 3, 3, 2, 1  //Fx
 ];
