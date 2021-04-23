@@ -8,6 +8,7 @@ pub use crate::cpu::State8080;
 
 use minifb::{Window, /*ScaleMode,*/ WindowOptions};
 use std::io::prelude::*;
+use std::io::{self, Read};
 use std::fs::File;
 use std::process;
 use std::{thread, time};
@@ -21,7 +22,7 @@ const NUM_PIXELS: usize = SCREEN_HEIGHT * SCREEN_WIDTH;
 
 fn main() {
     //2MHz with two interrupts for each frame on 60Hz screen
-    static CYCLES_PER_FRAME: usize = 2_000_000 / 60;
+    static CYCLES_PER_FRAME: usize = 3_000_000 / 60;
 
 
     let condition = State8080::ConditionCodes {z:false, s:false, p:false, cy:false, ac:false, pad:0};
@@ -95,7 +96,7 @@ fn main() {
             generate_interrupt(&mut state, &mut interrupt_type);
             interrupt_type = !interrupt_type;
             i+=1;
-            println!("Interrup No: {}", i);
+            //println!("Interrup No: {}", i);
         }
         cycles = 0;
 
@@ -123,6 +124,14 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
     state.pc += SIZE[usize::from(opcode)] as u16;
 
     //let memory = state.memory.clone();
+
+    //for debugging
+    if pc == 0xb1 || pc == 0x100 || pc == 0x141 || pc == 0x17a || pc == 0x1a1 || pc == 0x1c0 {
+        println!("PC is at {:x?}. Press enter to continue", pc);
+        let mut buffer = String::new();
+        io::stdin().read_line(&mut buffer).expect("Did not enter a correct string");
+    }
+
 
     match opcode {
         // NOP
@@ -200,6 +209,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
             instructions::inx(&mut state.d, &mut state.e);
         },
 
+        // INR D
+        0x14 => instructions::inr(&mut state.d, &mut state.cc),
+
         // MVI D,D8
         0x16 => {
             instructions::mvi(&mut state.d, &state.memory, &pc);
@@ -225,6 +237,13 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         // LXI H,word
         0x21 => {
             instructions::lxi(&mut state.h, &mut state.l, &pc, &state.memory);
+        },
+
+        //SHLD
+        0x22 => {
+            let offset: usize = (usize::from(state.memory[pc + 2]) << 8) | usize::from(state.memory[pc + 1]);
+            state.memory[offset] = state.l;
+            state.memory[offset + 1] = state.h;
         },
 
         // INX H
@@ -309,6 +328,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
             state.a = state.memory[offset];
         },
 
+        // INR A
+        0x3c => instructions::inr(&mut state.a, &mut state.cc),
+
         // DCR A
         0x3d => {
             instructions::dcr(&mut state.a, &mut state.cc);
@@ -358,6 +380,15 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
             state.b = state.memory[offset];
         },
 
+        // MOV B,A
+        0x47 => state.b = state.a,
+
+        // MOV C,M
+        0x4e => {
+            let offset = (usize::from(state.h) << 8) | usize::from(state.l);
+            state.c = state.memory[offset];
+        },
+
         // MOV C,A
         0x4f => {
             state.c = state.a;
@@ -385,6 +416,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
             state.e = state.a;
         },
 
+        // MOV H,C
+        0x61 => state.h = state.c,
+
         // MOV H,M
         0x66 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
@@ -395,6 +429,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         0x67 => {
             state.h = state.a;
         },
+
+        // MOV L,B
+        0x68 => state.l = state.b,
 
         // MOV L,A
         0x6f => {
@@ -502,6 +539,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
             instructions::ana(&mut state.a, &a, &mut state.cc);
         },
 
+        // XRA B
+        0xa8 => instructions::xra(&mut state.a, &state.b, &mut state.cc),
+
         // XRA A
         0xaf => {
             let a = state.a;
@@ -512,6 +552,12 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         0xb0 => {
             instructions::ora(&mut state.a, &state.b, &mut state.cc);
         },
+
+        // ORA H
+        0xb4 => instructions::ora(&mut state.a, &state.h, &mut state.cc),
+
+        // ORA L
+        0xb5 => instructions::ora(&mut state.a, &state.l, &mut state.cc),
 
         // ORA M
         0xb6 => {
@@ -612,6 +658,18 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
             } else {}
         },
 
+        // CZ adr
+        0xcc => {
+            if state.cc.z {
+                let sp: usize = usize::from(state.sp);
+                let ret = state.pc;
+                state.memory[sp - 1] = ret.to_be_bytes()[0];
+                state.memory[sp - 2] = ret.to_be_bytes()[1];
+                state.sp -= 2;
+                state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
+            }
+        }
+
         // CALL adr
         0xcd => {
             let sp: usize = usize::from(state.sp);
@@ -694,6 +752,19 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         // IN D8
         0xdb => {
             state.a = special.machine_in(&state.memory[pc+1], state);
+        },
+
+        //SBI D8
+        0xde => {
+            let a: u16 = 0x100 | u16::from(state.a);
+            let result: u16 = a - u16::from(state.memory[pc + 1]) - u16::from(state.cc.cy);
+            state.cc.cy = result < 0x100;
+            state.a = result as u8;
+            let result = state.a;
+            state.cc.z = result == 0;
+            state.cc.s = (result & 0x80) != 0;
+            state.cc.p = parity(result);
+
         },
 
         // POP H
@@ -786,6 +857,13 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         // SPHL
         0xf9 => {
             state.sp = (u16::from(state.h) << 8) | u16::from(state.l);
+        },
+
+        // JM adr
+        0xfa => {
+            if state.cc.s {
+                state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
+            }
         },
 
         // EI
