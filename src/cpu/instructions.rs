@@ -16,6 +16,7 @@ pub fn inr(register: &mut u8, cc: &mut ConditionCodes) {
     cc.z = zero(register);
     cc.s = sign(register);
     cc.p = parity(register);
+    cc.ac = (*register & 0xf) ==0;
 }
 
 pub fn dcr(register: &mut u8, cc: &mut ConditionCodes) {
@@ -23,6 +24,7 @@ pub fn dcr(register: &mut u8, cc: &mut ConditionCodes) {
     cc.z = zero(register);
     cc.s = sign(register);
     cc.p = parity(register);
+    cc.ac = !((*register & 0xf) == 0);
 }
 
 pub fn inx(high: &mut u8, low: &mut u8) {
@@ -61,21 +63,23 @@ pub fn mov(tregister: &mut u8, sregister: &u8) {
 }
 
 pub fn add(tregister: &mut u8, sregister: &u8, cc: &mut ConditionCodes) {
-    let result : u16 = u16::from(*tregister) + u16::from(*sregister);
+    let result : u16 = u16::from(*tregister) + u16::from(*sregister) + cc.cy as u16;
     *tregister = result as u8;
     cc.cy = result > 0xff;
+    cc.ac = carry(4, *tregister, *sregister, cc.cy);
     cc.z = zero(tregister);
     cc.s = sign(tregister);
     cc.p = parity(tregister);
 }
 
 pub fn ana(tregister: &mut u8, sregister: &u8, cc: &mut ConditionCodes) {
-    *tregister = *tregister & *sregister;
+    let result = *tregister & *sregister;
+    cc.ac = ((*tregister | *sregister) & 0x08) != 0;
+    *tregister = result;
     cc.z = zero(tregister);
     cc.s = sign(tregister);
     cc.p = parity(tregister);
     cc.cy = false;
-    cc.ac = false;
 }
 
 pub fn xra(tregister: &mut u8, sregister: &u8, cc: &mut ConditionCodes) {
@@ -110,4 +114,10 @@ fn zero(x: &u8) -> bool {
 
 fn sign(x: &u8) -> bool {
     return (*x & 0x80) != 0;
+}
+
+fn carry(bit_no: u8, a: u8, b: u8, cy: bool) -> bool {
+    let result: u16 = a as u16 + b as u16 + cy as u16;
+    let carry: u16 = result ^ a as u16 ^ b as u16;
+    return (carry & (1 << bit_no as u16)) != 0;
 }

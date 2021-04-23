@@ -21,7 +21,7 @@ const NUM_PIXELS: usize = SCREEN_HEIGHT * SCREEN_WIDTH;
 
 fn main() {
     //2MHz with two interrupts for each frame on 60Hz screen
-    static CYCLES_PER_FRAME: usize = 2_000_000 / 120;
+    static CYCLES_PER_FRAME: usize = 2_000_000 / 60;
 
 
     let condition = State8080::ConditionCodes {z:false, s:false, p:false, cy:false, ac:false, pad:0};
@@ -115,9 +115,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
     let opcode: u8 = state.memory[usize::from(state.pc)];
     *cycles += usize::from(CYCLES[usize::from(opcode)]);
     let pc: usize = usize::from(state.pc);
-    println!("Instruction: {} op: {:x?} pc:{:x?}", total_instructions, opcode, pc);
-    println!("a:{:x?} bc:{:x?}{:x?} de:{:x?}{:x?} hl:{:x?}{:x?} sp:{:x?}", state.a, state.b, state.c, state.d, state.e, state.h, state.l, state.sp);
-    println!("cycles:{}", *cycles);
+    //println!("Instruction: {} op: {:x?} pc:{:x?}", total_instructions, opcode, pc);
+    //println!("a:{:x?} bc:{:x?}{:x?} de:{:x?}{:x?} hl:{:x?}{:x?} sp:{:x?}", state.a, state.b, state.c, state.d, state.e, state.h, state.l, state.sp);
+    //println!("cycles:{}", *cycles);
 
     //state.pc += 1;
     state.pc += SIZE[usize::from(opcode)] as u16;
@@ -132,8 +132,6 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         0x01 => {
             instructions::lxi(&mut state.b, &mut state.c, &pc, &state.memory);
         },
-
-        //0x02 => unimplemented_instruction(),
 
         // INX B
         0x03 => {
@@ -157,6 +155,7 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
 
         // RLC
         0x07 => {
+            state.cc.cy = (state.a >> 7) != 0;
             state.a = (state.a >> 7) & (state.a << 1);
         },
 
@@ -182,7 +181,7 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
 
         // RRC
         0x0f => {
-            state.cc.cy = (state.a & 0x1) == 1;
+            state.cc.cy = (state.a & 0x1) != 0;
             state.a = ((state.a & 1) << 7) | (state.a >> 1);
         },
 
@@ -218,15 +217,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
 
         // RAR
         0x1f => {
-            let x = state.a;
-            let b: u8;
-            if state.cc.cy {
-                b = 1;
-            }else{
-                b = 0;
-            }
-            state.a = (b << 7) | (x >> 1);
-            state.cc.cy = 1 == (x & 0x1);
+            let cy: bool = state.cc.cy;
+            state.cc.cy = state.a & 1 != 0;
+            state.a = (state.a >> 1) | ((cy as u8) << 7);
         },
 
         // LXI H,word
@@ -286,7 +279,7 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
 
         // STA adr
         0x32 => {
-            let offset = (usize::from(state.memory[pc + 2]) << 8) | usize::from(state.memory[pc]);
+            let offset = (usize::from(state.memory[pc + 2]) << 8) | usize::from(state.memory[pc + 1]);
             state.memory[offset] = state.a;
         },
 
@@ -817,8 +810,6 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         _ => {unimplemented_instruction(opcode, pc)},
     }
 
-    //state.memory[0x2410] = 0xff;
-
     /*for (i,item) in state.memory[0..0x3fff].iter().enumerate() {
         if state.memory[i] != memory[i] {
             println!("memory at addr: {:x?} changed {:x?} -> {:x?}", i, memory[i], state.memory[i]);
@@ -849,46 +840,6 @@ fn generate_interrupt(state: &mut State8080::State8080, interrupt_type: &mut boo
     state.pc = 8*((*interrupt_type as u16)+1);
     state.int_enable = false;
 }
-
-/*fn wrapping_add(x1: &mut u8, x2: &mut u8) -> u8 {
-    return (usize::from(*x1) + usize::from(*x2)) as u8;
-}
-
-fn wrapping_sub(x1: &mut u8, x2: &mut u8) -> u8 {
-    return ((0x100 & usize::from(*x1)) - usize::from(*x2)) as u8;
-}
-
-fn wrapping_add_u16(x1: &mut u16, x2: &mut u16) -> u16 {
-    return (usize::from(*x1) + usize::from(*x2)) as u16;
-}
-
-fn wrapping_sub_u16(x1: &mut u16, x2: &mut u16) -> u16 {
-    return ((0x10000 & usize::from(*x1)) - usize::from(*x2)) as u16;
-} */
-
-/*struct ConditionCodes {
-    z: bool,
-    s: bool,
-    p: bool,
-    cy: bool,
-    ac: bool,
-    pad: u8,
-}
-
-pub struct State8080 {
-    a: u8,
-    b: u8,
-    c: u8,
-    d: u8,
-    e: u8,
-    h: u8,
-    l: u8,
-    sp: u16,
-    pc: u16,
-    memory: [u8;16384],
-    cc: ConditionCodes,
-    int_enable: bool,
-} */
 
 struct Special {
     shift_offset: u8,
