@@ -225,7 +225,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         // RRC
         0x0f => {
             state.cc.cy = (state.a & 0x1) != 0;
-            state.a = ((state.a & 1) << 7) | (state.a >> 1);
+            state.a = (state.a & 1 << 7) | (state.a >> 1);
         },
 
         // LXI D,word
@@ -348,10 +348,11 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         // DCR M
         0x035 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
-            state.memory[offset] = state.memory[offset].wrapping_sub(1);
+            instructions::dcr(&mut state.memory[offset], &mut state.cc);
+            /*state.memory[offset] = state.memory[offset].wrapping_sub(1);
             state.cc.z = state.memory[offset] == 0;
             state.cc.s = (state.memory[offset] & 0x80) != 0;
-            state.cc.p = parity(state.memory[offset]);
+            state.cc.p = parity(state.memory[offset]);*/
         },
 
         // MVI M,D8
@@ -571,12 +572,13 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         // ADD M
         0x86 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
-            let result: u16 = u16::from(state.a) + u16::from(state.memory[offset]);
+            instructions::add(&mut state.a, &state.memory[offset], &mut state.cc);
+            /*let result: u16 = u16::from(state.a) + u16::from(state.memory[offset]);
             state.cc.cy = result > 0xff;
             state.a = result as u8;
             state.cc.z = state.a == 0;
             state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);
+            state.cc.p = parity(state.a);*/
         },
 
         // ADD A
@@ -818,10 +820,11 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
         // SUI D8
         0xd6 => {
             let offset = usize::from(pc + 1);
-            let a = u16::from(state.a) | 0x100;
-            let result: u16 = a - u16::from(state.memory[offset]);
-            state.cc.cy = result < 0x100;
-            state.a = result as u8;
+            //let a = u16::from(state.a) | 0x100; <-- uhmm.. what is this?
+            let a = u16::from(state.a);
+            let result: u16 = a.wrapping_sub(u16::from(state.memory[offset]));
+            state.cc.cy = result >= 0x100;
+            state.a = result.to_be_bytes()[1];
             state.cc.z = state.a == 0;
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.p = parity(state.a);
@@ -852,10 +855,10 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         //SBI D8
         0xde => {
-            let a: u16 = 0x100 | u16::from(state.a);
-            let result: u16 = a - u16::from(state.memory[pc + 1]) - u16::from(state.cc.cy);
-            state.cc.cy = result < 0x100;
-            state.a = result as u8;
+            let a: u16 = u16::from(state.a);
+            let result: u16 = a.wrapping_sub(u16::from(state.memory[pc + 1])).wrapping_sub(u16::from(state.cc.cy));
+            state.cc.cy = result >= 0x100;
+            state.a = result.to_be_bytes()[1];
             let result = state.a;
             state.cc.z = result == 0;
             state.cc.s = (result & 0x80) != 0;
@@ -891,11 +894,7 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         // ANI D8
         0xe6 => {
-            state.a = state.a & state.memory[pc + 1];
-            state.cc.z = state.a == 0;
-            state.cc.s = (state.a & 0x80) != 0;
-            state.cc.p = parity(state.a);
-            state.cc.cy = false;
+            instructions::ana(&mut state.a, &state.memory[pc + 1], &mut state.cc);
         },
 
         // PCHL
@@ -941,13 +940,15 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
             state.sp -= 2;
         },
 
+        //TODO Besser machen
         // ORI D8
         0xf6 => {
-            state.a = state.a | state.memory[pc + 1];
+            instructions::ora(&mut state.a, &state.memory[pc + 1], &mut state.cc);
+            /*state.a = state.a | state.memory[pc + 1];
             state.cc.z = state.a == 0;
             state.cc.s = (state.a & 0x80) != 0;
             state.cc.cy = false;
-            state.cc.p = parity(state.a);
+            state.cc.p = parity(state.a);*/
         },
 
         // SPHL
@@ -969,14 +970,15 @@ fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut 
 
         //CPI D8
         0xfe => {
-            let offset = usize::from(pc + 1);
-            let a = u16::from(state.a) | 0x100;
+            //let offset = usize::from(pc + 1);
+            instructions::cmp(&mut state.a, &state.memory[pc + 1], &mut state.cc);
+            /*let a = u16::from(state.a) | 0x100;
             let result: u16 = a - u16::from(state.memory[offset]);
             state.cc.cy = result < 0x100;
             let result = result as u8;
             state.cc.z = result == 0;
             state.cc.s = (result & 0x80) != 0;
-            state.cc.p = parity(result);
+            state.cc.p = parity(result);*/
         },
 
 
@@ -1035,7 +1037,9 @@ impl Special{
                 self.shift0 = self.shift1;
                 self.shift1 = *value;
             },
-            _ => (),
+            _ => {
+                println!("unimplemented special port(out): {:?}", port);
+            },
         }
     }
     fn machine_in(&mut self, port: &u8, state: &State8080) -> u8 {
@@ -1046,7 +1050,9 @@ impl Special{
                 let buffer: u16 = (v >> (8-self.shift_offset)) & 0xff;
                 a = buffer.to_be_bytes()[1];
             },
-            _ => (),
+            _ => {
+                println!("unimplemented special port(in): {:?}", port);
+            },
         }
         return a;
     }
