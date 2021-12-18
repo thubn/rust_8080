@@ -4,11 +4,13 @@
 mod cpu;
 
 pub use crate::cpu::instructions;
-pub use crate::cpu::State8080;
+pub use crate::cpu::state8080::State8080;
+pub use crate::cpu::state8080::ConditionCodes;
+pub use crate::cpu::debugging::Instructioninfo;
 
 use minifb::{Window, /*ScaleMode,*/ WindowOptions};
-use std::io::prelude::*;
-use std::io::{self, Read};
+use std::io;
+use std::io::{Read};
 use std::fs::File;
 use std::process;
 use std::{thread, time};
@@ -25,8 +27,8 @@ fn main() {
     static CYCLES_PER_FRAME: usize = 3_000_000 / 60;
 
 
-    let condition = State8080::ConditionCodes {z:false, s:false, p:false, cy:false, ac:false, pad:0};
-    let mut state = State8080::State8080 {a:0, b:0, c:0, d:0, e:0, h:0, l:0, sp:0, pc:0, memory:[0;16384],cc:condition, int_enable:false};
+    let condition = ConditionCodes {z:false, s:false, p:false, cy:false, ac:false, pad:0};
+    let mut state = State8080 {a:0, b:0, c:0, d:0, e:0, h:0, l:0, sp:0, pc:0, memory:[0;16384],cc:condition, int_enable:false};
     let mut special = Special{shift_offset:0, shift0:0, shift1:0};
 
     let mut invadersh = File::open("invaders.h").expect("no such file");
@@ -58,10 +60,37 @@ fn main() {
     let mut cycles: usize = 0;
     let mut interrupt_type: bool = false;
     let mut total_instructions: usize = 0;
+    let mut instr_history: Vec<Instructioninfo> = Vec::new();
+    let mut instr_counter = [[0usize; 2]; 256];
 
+    //main emulation loop
     loop {
         while cycles <= CYCLES_PER_FRAME / 2 {
-            emulate_instruction(&mut state, &mut cycles, &mut special, &mut total_instructions);
+
+            instr_history.push(Instructioninfo {
+                instr_n: total_instructions,
+                opcode: state.memory[usize::from(state.pc)],
+                pc: state.pc,
+                sp: state.sp,
+                int_enable: state.int_enable});
+
+            instr_counter[usize::from(state.memory[usize::from(state.pc)])][0] += 1;
+            instr_counter[usize::from(state.memory[usize::from(state.pc)])][1] = total_instructions;
+
+            if !emulate_instruction(&mut state, &mut cycles, &mut special, &mut total_instructions) {
+                let mut count: usize = 1000;
+                while let Some(top) = instr_history.pop() {
+                    println!("{:x?}", top);
+                    count -= 1;
+                    if count==0 {break};
+                }
+                println!();
+                for n in 0..256 {
+                    println!("Instr: {:x?} count: {:?} last: {:?}", n, instr_counter[n][0], instr_counter[n][1])
+                }
+                println!("Emulation aborted due to an error");
+                process::exit(0x0);
+            }
             total_instructions += 1;
         }
 
@@ -112,7 +141,7 @@ fn main() {
     } */
 }
 
-fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, special: &mut Special, total_instructions: &mut usize) {
+fn emulate_instruction(state: &mut State8080, cycles: &mut usize, special: &mut Special, total_instructions: &mut usize) -> bool {
     let opcode: u8 = state.memory[usize::from(state.pc)];
     *cycles += usize::from(CYCLES[usize::from(opcode)]);
     let pc: usize = usize::from(state.pc);
@@ -126,7 +155,7 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
     //let memory = state.memory.clone();
 
     //for debugging
-    if pc == 0xb1 || pc == 0x100 || pc == 0x141 || pc == 0x17a || pc == 0x1a1 || pc == 0x1c0 {
+    if pc == 0x118/* || pc == 0x100 || pc == 0x141 || pc == 0x17a || pc == 0x1a1 || pc == 0x1c0*/ {
         println!("PC is at {:x?}. Press enter to continue", pc);
         let mut buffer = String::new();
         io::stdin().read_line(&mut buffer).expect("Did not enter a correct string");
@@ -165,7 +194,7 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         // RLC
         0x07 => {
             state.cc.cy = (state.a >> 7) != 0;
-            state.a = (state.a >> 7) & (state.a << 1);
+            state.a = (state.a >> 7) | (state.a << 1);
         },
 
         // DAD B
@@ -176,6 +205,11 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         // LDAX B
         0x0a => {
             instructions::ldax(&mut state.a, &state.b, &state.c, &state.memory);
+        },
+
+        // INR C
+        0x0c => {
+            instructions::inr(&mut state.c, &mut state.cc);
         },
 
         // DCR C
@@ -211,6 +245,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
 
         // INR D
         0x14 => instructions::inr(&mut state.d, &mut state.cc),
+
+        // DCR D
+        0x15 => instructions::dcr(&mut state.d, &mut state.cc),
 
         // MVI D,D8
         0x16 => {
@@ -300,6 +337,12 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         0x32 => {
             let offset = (usize::from(state.memory[pc + 2]) << 8) | usize::from(state.memory[pc + 1]);
             state.memory[offset] = state.a;
+        },
+
+        // INR M
+        0x34 => {
+            let offset = (usize::from(state.h) << 8) | usize::from(state.l);
+            instructions::inr(&mut state.memory[offset], &mut state.cc);
         },
 
         // DCR M
@@ -433,6 +476,9 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         // MOV L,B
         0x68 => state.l = state.b,
 
+        // MOV L,C
+        0x69 => state.l = state.c,
+
         // MOV L,A
         0x6f => {
             state.l = state.a;
@@ -442,6 +488,12 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         0x70 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
             state.memory[offset] = state.b;
+        },
+
+        // MOV M,C
+        0x71 => {
+            let offset = (usize::from(state.h) << 8) | usize::from(state.l);
+            state.memory[offset] = state.c;
         },
 
         // MOV M,A
@@ -533,6 +585,18 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
             instructions::add(&mut state.a, &a, &mut state.cc);
         },
 
+        // ANA B
+        0xa0 => {
+            instructions::ana(&mut state.a, &state.b, &mut state.cc);
+        },
+
+        // ANA M
+        0xa6 => {
+            let offset = (usize::from(state.h) << 8) | usize::from(state.l);
+            let m = state.memory[offset];
+            instructions::ana(&mut state.a, &m, &mut state.cc);
+        },
+
         // ANA A
         0xa7 => {
             let a = state.a;
@@ -561,12 +625,27 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
 
         // ORA M
         0xb6 => {
+
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
-            state.a = state.a | state.memory[offset];
-            state.cc.z = state.a == 0;
-            state.cc.s = (state.a & 0x80) != 0;
-            state.cc.cy = false;
-            state.cc.p = parity(state.a);
+            let m = state.memory[offset];
+            instructions::ora(&mut state.a, &m, &mut state.cc);
+        },
+
+        // CMP B
+        0xb8 => {
+            instructions::cmp(&mut state.a, &state.b, &mut state.cc);
+        },
+
+        // CMP H
+        0xbc => {
+            instructions::cmp(&mut state.a, &state.h, &mut state.cc);
+        },
+
+        // CMP H
+        0xbe => {
+            let offset = (usize::from(state.h) << 8) | usize::from(state.l);
+            let m = state.memory[offset];
+            instructions::cmp(&mut state.a, &m, &mut state.cc);
         },
 
         // RNZ
@@ -604,7 +683,8 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         0xc4 => {
             if !state.cc.z {
                 let sp: usize = usize::from(state.sp);
-                let ret = state.pc + 2;
+                //let ret = state.pc + 2; <-- maybe this is wrong
+                let ret = state.pc;
                 state.memory[sp - 1] = ret.to_be_bytes()[0];
                 state.memory[sp - 2] = ret.to_be_bytes()[1];
                 state.sp -= 2;
@@ -667,8 +747,10 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
                 state.memory[sp - 2] = ret.to_be_bytes()[1];
                 state.sp -= 2;
                 state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
+            } else {
+                *cycles -= 6;
             }
-        }
+        },
 
         // CALL adr
         0xcd => {
@@ -709,6 +791,20 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         // OUT D8
         0xd3 => {
             special.machine_out(&state.a, &state.memory[pc+1]);
+        },
+
+        // CNC adr
+        0xd4 => {
+            if !state.cc.cy {
+                let sp: usize = usize::from(state.sp);
+                let ret = state.pc;
+                state.memory[sp - 1] = ret.to_be_bytes()[0];
+                state.memory[sp - 2] = ret.to_be_bytes()[1];
+                state.sp -= 2;
+                state.pc = (u16::from(state.memory[pc + 2]) << 8) | u16::from(state.memory[pc + 1]);
+            } else {
+                *cycles -= 6;
+            }
         },
 
         // PUSH D
@@ -885,7 +981,10 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
 
 
 
-        _ => {unimplemented_instruction(opcode, pc)},
+        _ => {
+            unimplemented_instruction(opcode, pc);
+            return false;
+        },
     }
 
     /*for (i,item) in state.memory[0..0x3fff].iter().enumerate() {
@@ -894,6 +993,8 @@ fn emulate_instruction(state: &mut State8080::State8080, cycles: &mut usize, spe
         }
     }
     println!(""); */
+
+    return true;
 
 }
 
@@ -907,11 +1008,11 @@ fn parity(x: u8) -> bool {
 
 fn unimplemented_instruction(opcode: u8, pc: usize) {
     println!("Unimplemented Instruction: opcode: {:x?} pc: {:x?}", opcode, pc);
-    thread::sleep(time::Duration::from_secs(10));
-    process::exit(0x0);
+    //thread::sleep(time::Duration::from_secs(10));
+    //process::exit(0x0);
 }
 
-fn generate_interrupt(state: &mut State8080::State8080, interrupt_type: &mut bool) {
+fn generate_interrupt(state: &mut State8080, interrupt_type: &mut bool) {
     state.memory[usize::from(state.sp) - 1] = state.pc.to_be_bytes()[0];
     state.memory[usize::from(state.sp) - 2] = state.pc.to_be_bytes()[1];
     state.sp -= 2;
@@ -937,7 +1038,7 @@ impl Special{
             _ => (),
         }
     }
-    fn machine_in(&mut self, port: &u8, state: &State8080::State8080) -> u8 {
+    fn machine_in(&mut self, port: &u8, state: &State8080) -> u8 {
         let mut a: u8 = 0;
         match port {
             3 => {

@@ -1,5 +1,5 @@
 
-pub use crate::cpu::State8080;
+pub use crate::cpu::state8080::State8080;
 pub use crate::cpu::ConditionCodes;
 
 //0x00 0x08 0x10 0x18 0x20 0x28 0x30 0x38
@@ -98,6 +98,16 @@ pub fn ora(tregister: &mut u8, sregister: &u8, cc: &mut ConditionCodes) {
     cc.p = parity(tregister);
     cc.cy = false;
     cc.ac = false;
+}
+
+pub fn cmp(tregister: &mut u8, sregister: &u8, cc: &mut ConditionCodes) {
+    let result = u16::from(*tregister).wrapping_sub(u16::from(*sregister));
+    cc.cy = result >> 8 != 0;
+    let result = tregister.wrapping_sub(*sregister);
+    cc.ac = (*tregister ^ result ^ *sregister) & 0x10 == 0;
+    cc.z = zero(tregister);
+    cc.s = sign(tregister);
+    cc.p = parity(tregister);
 }
 
 fn parity(x: &u8) -> bool {

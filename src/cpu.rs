@@ -1,4 +1,5 @@
 pub mod instructions;
-pub mod State8080;
-pub use self::State8080::ConditionCodes;
+pub mod state8080;
+pub mod debugging;
+pub use self::state8080::ConditionCodes;
 //pub struct State8080;
