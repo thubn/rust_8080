@@ -65,7 +65,18 @@ pub fn mov(tregister: &mut u8, sregister: &u8) {
 }
 
 pub fn add(tregister: &mut u8, sregister: &u8, cc: &mut ConditionCodes) {
-    let result : u16 = u16::from(*tregister) + u16::from(*sregister) + cc.cy as u16;
+    let result : u16 = u16::from(*tregister) + u16::from(*sregister)/* + cc.cy as u16*/;
+    *tregister = result as u8;
+    set_arithmetic_flags(cc, &result)
+    /*cc.cy = result > 0xff;
+    cc.ac = carry(4, *tregister, *sregister, cc.cy);
+    cc.z = zero(tregister);
+    cc.s = sign(tregister);
+    cc.p = parity(tregister);*/
+}
+
+pub fn sub(tregister: &mut u8, sregister: &u8, cc: &mut ConditionCodes) {
+    let result : u16 = u16::from(*tregister) - u16::from(*sregister)/* - cc.cy as u16*/;
     *tregister = result as u8;
     set_arithmetic_flags(cc, &result)
     /*cc.cy = result > 0xff;
