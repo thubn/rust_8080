@@ -2,13 +2,12 @@
 name = "rust_8080"
 version = "0.1.0"
 authors = ["thorben"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#minifb = "0.19.3"
-minifb = "0.20.0"
+minifb = "0.23.0"
 
 #[dependencies.sdl2]
 #version = "0.34"
@@ -16,4 +15,8 @@ minifb = "0.20.0"
 #features = ["gfx"]
 
 [profile.release]
-opt-level = 3
+opt-level = "z" #3 for speed "z" for size
+strip = true  # Automatically strip symbols from the binary.
+lto = true # Link Time Optimization
+codegen-units = 1 #Reduce Parallel Code Generation Units to Increase Optimization
+panic = "abort" # remove panic unwinding code for smaller size
