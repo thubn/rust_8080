@@ -1,4 +1,4 @@
-#[allow(dead_code)]
+//#[allow(dead_code)]
 //mod render;
 mod cpu;
 
@@ -20,7 +20,7 @@ const SCREEN_HEIGHT: usize = 256;
 const NUM_PIXELS: usize = SCREEN_HEIGHT * SCREEN_WIDTH;
 
 fn main() {
-    //2MHz/1Mhz with two interrupts for each frame on 60Hz screen
+    /** 2MHz/1Mhz with two interrupts for each frame on 60Hz screen */
     static CYCLES_PER_FRAME: isize = 1_000_000 / 60;
 
     let condition: ConditionCodes = ConditionCodes {
@@ -51,6 +51,7 @@ fn main() {
         shift1: 0,
     };
 
+    //load rom to memory
     let mut invadersh: File = File::open("invaders.h").expect("no such file");
     invadersh
         .read(&mut state.memory[..=0x07ff])
@@ -71,6 +72,7 @@ fn main() {
         .read(&mut state.memory[0x1800..=0x1fff])
         .expect("error reading into emulated memory");
 
+    // minifb window
     let mut window = Window::new(
         "8080",
         SCREEN_WIDTH,
@@ -83,51 +85,30 @@ fn main() {
 
     window.limit_update_rate(Some(std::time::Duration::from_millis(4)));
 
-    let mut i: usize = 0;
     let mut cycles: isize = 0;
     let mut interrupt_type: bool = false;
     let mut total_instructions: usize = 0;
-    //let mut instr_history: Vec<Instructioninfo> = Vec::new();
-    let mut instr_counter = [[0usize; 2]; 256];
 
     //main emulation loop
     loop {
+        // while no interrupt
         while cycles <= CYCLES_PER_FRAME / 2 {
-            /*instr_history.push(Instructioninfo {
-                instr_n: total_instructions,
-                opcode: state.memory[usize::from(state.pc)],
-                pc: state.pc,
-                sp: state.sp,
-                int_enable: state.int_enable,
-            });*/
 
-            instr_counter[usize::from(state.memory[usize::from(state.pc)])][0] += 1;
-            instr_counter[usize::from(state.memory[usize::from(state.pc)])][1] = total_instructions;
-
+            // do emulation step (cpu instruction)
             if !emulate_instruction(
                 &mut state,
                 &mut cycles,
                 &mut special,
-                &mut total_instructions,
             ) {
-                /*let mut count: usize = 1000;
-                while let Some(top) = instr_history.pop() {
-                    println!("{:x?}", top);
-                    count -= 1;
-                    if count == 0 {
-                        break;
-                    };
-                }
-                //println!();
-                for n in 0..256 {
-                    println!("Instr: {:x?} count: {:?} last: {:?}", n, instr_counter[n][0], instr_counter[n][1])
-                }*/
+                //exit if emulate_instruction returns false (-> error)
                 println!("Emulation aborted due to an error");
+                dump_memory(&state, &total_instructions, &0, &state.pc, &cycles);
                 process::exit(0x0);
             }
             total_instructions += 1;
         }
 
+        // render pixels from emulated ram in minifb window
         let mut buffer: Vec<u32> = vec![0; NUM_PIXELS];
         let mut j = 0;
         for row in (0x2400..=0x241f).rev() {
@@ -136,16 +117,11 @@ fn main() {
                     let offset = row + (col * 0x20);
                     if (state.memory[offset] & (0x1 << b)) != 0x0 {
                         buffer[j] = 0x00ffffff;
-                        //print!("0");
-                        //process::exit(0);
                     } else {
                         buffer[j] = 0x00000000;
-                        //print!("_");
-                        //process::exit(0);
                     }
                     j += 1;
                 }
-                //println!("");
             }
         }
 
@@ -155,44 +131,33 @@ fn main() {
                 panic!("{}", e);
             });
 
+        // process interrupt
         if state.int_enable {
             generate_interrupt(&mut state, &mut interrupt_type);
             interrupt_type = !interrupt_type;
-            i += 1;
-            //println!("Interrup No: {}", i);
         }
         cycles = cycles - (CYCLES_PER_FRAME / 2);
 
-        //if i > 100 { break; }
+
         if total_instructions > 50000000 {
             println!("total_instructions ({:?}) > 50000000, exiting...", total_instructions);
             thread::sleep(time::Duration::from_secs(10));
             break;
         }
-        thread::sleep(time::Duration::from_millis(8));
+        thread::sleep(time::Duration::from_millis(4));
     }
-    /*for (i,item) in state.memory[0x2400..=0x3fff].iter().enumerate() {
-        println!("{:x?} {:x?}", 0x2400+i, item);
-    } */
 }
 
 fn emulate_instruction(
     state: &mut State8080,
     cycles: &mut isize,
     special: &mut Special,
-    total_instructions: &mut usize,
 ) -> bool {
     let opcode: u8 = state.memory[usize::from(state.pc)];
     *cycles += isize::from(CYCLES[usize::from(opcode)]);
     let pc: usize = usize::from(state.pc);
-    //println!("Instruction: {} op: {:x?} pc:{:x?}", total_instructions, opcode, pc);
-    //println!("a:{:x?} bc:{:x?}{:x?} de:{:x?}{:x?} hl:{:x?}{:x?} sp:{:x?}", state.a, state.b, state.c, state.d, state.e, state.h, state.l, state.sp);
-    //println!("cycles:{}", *cycles);
 
-    //state.pc += 1;
     state.pc += SIZE[usize::from(opcode)] as u16;
-
-    //let memory = state.memory.clone();
 
     //for debugging
     /*
@@ -202,7 +167,6 @@ fn emulate_instruction(
         io::stdin().read_line(&mut buffer).expect("Did not enter a correct string");
     }*/
 
-    //dump_memory(&state);
     match opcode {
         // NOP
         0x00 => instructions::nop(),
@@ -405,10 +369,6 @@ fn emulate_instruction(
         0x035 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
             instructions::dcr(&mut state.memory[offset], &mut state.cc);
-            /*state.memory[offset] = state.memory[offset].wrapping_sub(1);
-            state.cc.z = state.memory[offset] == 0;
-            state.cc.s = (state.memory[offset] & 0x80) != 0;
-            state.cc.p = parity(state.memory[offset]);*/
         }
 
         // MVI M,D8
@@ -551,7 +511,7 @@ fn emulate_instruction(
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
             if offset >= state.memory.len() {
                 println!("offset out of bounds({:x?})", offset);
-                exit(1);
+                return false;
             }
             state.memory[offset] = state.a;
         }
@@ -626,12 +586,6 @@ fn emulate_instruction(
         0x86 => {
             let offset = (usize::from(state.h) << 8) | usize::from(state.l);
             instructions::add(&mut state.a, &state.memory[offset], &mut state.cc);
-            /*let result: u16 = u16::from(state.a) + u16::from(state.memory[offset]);
-            state.cc.cy = result > 0xff;
-            state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = state.a & 0x80 != 0;
-            state.cc.p = parity(state.a);*/
         }
 
         // ADD A
@@ -767,11 +721,8 @@ fn emulate_instruction(
         0xc6 => {
             let offset = usize::from(pc + 1);
             let result: u16 = u16::from(state.a) + u16::from(state.memory[offset]);
-            state.cc.cy = result > 0xff;
             state.a = result as u8;
-            state.cc.z = state.a == 0;
-            state.cc.s = (state.a & 0x80) != 0;
-            state.cc.p = parity(state.a);
+            instructions::set_arithmetic_flags(&mut state.cc, &result);
         }
 
         // RZ
@@ -854,11 +805,6 @@ fn emulate_instruction(
         // OUT D8
         0xd3 => {
             special.machine_out(&state.memory[pc + 1], &state.a);
-            /*println!("Instruction: {} op: {:x?} pc:{:x?}", total_instructions, opcode, pc);
-            println!("a:{:x?} bc:{:x?}{:x?} de:{:x?}{:x?} hl:{:x?}{:x?} sp:{:x?}", state.a, state.b, state.c, state.d, state.e, state.h, state.l, state.sp);
-            println!("cycles:{}", *cycles);
-            dump_memory(&state);
-            println!();*/
         }
 
         // CNC adr
@@ -886,14 +832,10 @@ fn emulate_instruction(
         // SUI D8
         0xd6 => {
             let offset = usize::from(pc + 1);
-            //let a = u16::from(state.a) | 0x100; <-- uhmm.. what is this?
             let a = u16::from(state.a);
             let result: u16 = a.wrapping_sub(u16::from(state.memory[offset]));
-            state.cc.cy = result >= 0x100;
             state.a = result.to_be_bytes()[1];
-            state.cc.z = state.a == 0;
-            state.cc.s = (state.a & 0x80) != 0;
-            state.cc.p = parity(state.a);
+            instructions::set_arithmetic_flags(&mut state.cc, &result);
         }
 
         // RC
@@ -926,12 +868,8 @@ fn emulate_instruction(
             let result: u16 = a
                 .wrapping_sub(u16::from(state.memory[pc + 1]))
                 .wrapping_sub(u16::from(state.cc.cy));
-            state.cc.cy = result >= 0x100;
             state.a = result.to_be_bytes()[1];
-            let result = state.a;
-            state.cc.z = result == 0;
-            state.cc.s = (result & 0x80) != 0;
-            state.cc.p = parity(result);
+            instructions::set_arithmetic_flags(&mut state.cc, &result);
         }
 
         // POP H
@@ -1022,11 +960,6 @@ fn emulate_instruction(
         // ORI D8
         0xf6 => {
             instructions::ora(&mut state.a, &state.memory[pc + 1], &mut state.cc);
-            /*state.a = state.a | state.memory[pc + 1];
-            state.cc.z = state.a == 0;
-            state.cc.s = (state.a & 0x80) != 0;
-            state.cc.cy = false;
-            state.cc.p = parity(state.a);*/
         }
 
         // SPHL
@@ -1048,15 +981,7 @@ fn emulate_instruction(
 
         //CPI D8
         0xfe => {
-            //let offset = usize::from(pc + 1);
             instructions::cmp(&mut state.a, &state.memory[pc + 1], &mut state.cc);
-            /*let a = u16::from(state.a) | 0x100;
-            let result: u16 = a - u16::from(state.memory[offset]);
-            state.cc.cy = result < 0x100;
-            let result = result as u8;
-            state.cc.z = result == 0;
-            state.cc.s = (result & 0x80) != 0;
-            state.cc.p = parity(result);*/
         }
 
         _ => {
@@ -1088,8 +1013,6 @@ fn unimplemented_instruction(opcode: u8, pc: usize) {
         "Unimplemented Instruction: opcode: {:x?} pc: {:x?}",
         opcode, pc
     );
-    //thread::sleep(time::Duration::from_secs(10));
-    //process::exit(0x0);
 }
 
 fn generate_interrupt(state: &mut State8080, interrupt_type: &mut bool) {
@@ -1100,7 +1023,7 @@ fn generate_interrupt(state: &mut State8080, interrupt_type: &mut bool) {
     state.int_enable = false;
 }
 
-fn dump_memory(state: &State8080) {
+fn dump_memory(state: &State8080, total_instructions: &usize, opcode: &u8, pc: &u16, cycles: &isize) {
     let mut memString = String::new();
     for n in 0..16384 {
         if n % 16 == 0 {
@@ -1116,6 +1039,9 @@ fn dump_memory(state: &State8080) {
         }
         memString.push_str(&tempString.as_str());
     }
+    println!("Instruction: {} op: {:x?} pc:{:x?}", *total_instructions, *opcode, *pc);
+    println!("a:{:x?} bc:{:x?}{:x?} de:{:x?}{:x?} hl:{:x?}{:x?} sp:{:x?}", state.a, state.b, state.c, state.d, state.e, state.h, state.l, state.sp);
+    println!("cycles:{}", *cycles);
     println!("------memdump------");
     print!("{}", memString);
     exit(0);
