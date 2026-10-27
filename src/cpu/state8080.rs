@@ -188,7 +188,7 @@ impl State8080 {
         let result = register.wrapping_add(1);
         let val = u16::from(register) + 1;
         self.cc.set_zsp(&val);
-        self.cc.ac = (register & 0xf) == 0;
+        self.cc.ac = (result & 0xf) == 0;
         return result;
     }
 
@@ -201,7 +201,7 @@ impl State8080 {
         let result = register.wrapping_sub(1);
         let val = u16::from(register).wrapping_sub(1);
         self.cc.set_zsp(&val);
-        self.cc.ac = !((register & 0xf) == 0);
+        self.cc.ac = !((result & 0xf) == 0xf);
         return result;
     }
 
@@ -236,10 +236,10 @@ impl State8080 {
 
     fn add_adc(&mut self, sregister: u8, cy: bool) {
         let result: u16 = u16::from(self.a) + u16::from(sregister) + cy as u16;
-        self.a = (result & 0xff) as u8;
-        self.cc.set_zsp(&result);
         self.cc.set_cy(self.a, sregister, cy);
         self.cc.set_ac(self.a, sregister, cy);
+        self.a = (result & 0xff) as u8;
+        self.cc.set_zsp(&result);
     }
 
     fn add(&mut self, sregister: u8) {
@@ -251,12 +251,12 @@ impl State8080 {
     }
 
     fn sub(&mut self, sregister: u8) {
-        self.add_adc(!sregister, false);
+        self.add_adc(!sregister, true);
         self.cc.cy = !self.cc.cy
     }
 
     fn sbb(&mut self, sregister: u8) {
-        self.add_adc(!sregister, self.cc.cy);
+        self.add_adc(!sregister, !self.cc.cy);
         self.cc.cy = !self.cc.cy
     }
 
@@ -366,7 +366,15 @@ impl State8080 {
     }
 
     pub fn step(&mut self) -> bool {
-        if self.cycles < CYCLES_PER_FRAME / 2 {
+        // interrupts are only serviced when enabled, and not until the
+        // instruction following EI has been executed
+        if self.cycles >= CYCLES_PER_FRAME / 2 && self.int_enable && self.int_delay == 0 {
+            self.interrupt();
+            return true;
+        } else {
+            if self.int_delay > 0 {
+                self.int_delay -= 1;
+            }
             let opcode = self.read_next();
             let result = self.do_instruction(opcode);
             if !result {
@@ -376,9 +384,6 @@ impl State8080 {
             }
             self.cycles += isize::from(CYCLES[usize::from(opcode)]);
             return false;
-        } else {
-            self.interrupt();
-            return true;
         }
     }
 
@@ -425,7 +430,7 @@ impl State8080 {
             0x0d => self.c = self.dcr(self.c),
             0x15 => self.d = self.dcr(self.d),
             0x35 => {
-                let val = self.inr(self.memory.read(self.get_hl()));
+                let val = self.dcr(self.memory.read(self.get_hl()));
                 ret = self.memory.write(self.get_hl(), val)
             }
             0x3d => self.a = self.dcr(self.a),
@@ -449,7 +454,10 @@ impl State8080 {
             0x3f => self.cc.cy = !self.cc.cy,
             0xe9 => self.pc = self.get_hl(),
             0xf9 => self.sp = self.get_hl(),
-            0xfb => self.int_enable = true,
+            0xfb => {
+                self.int_enable = true;
+                self.int_delay = 1;
+            }
             // DAD
             0x09 => self.dad(self.get_bc()),
             0x19 => self.dad(self.get_de()),
@@ -459,7 +467,8 @@ impl State8080 {
             0x1a => self.a = self.memory.read(self.get_de()),
             //0x2a => self.read_next_word_as_u8(&mut self.h, &mut self.l),
             0x2a => {
-                let val = self.read_next_word();
+                let addr = self.read_next_word();
+                let val = self.memory.read_word(addr);
                 self.set_hl(val)
             }
             0x3a => {
@@ -468,7 +477,10 @@ impl State8080 {
             }
             // STAX SHLD STA
             0x12 => ret = self.memory.write(self.get_de(), self.a),
-            0x22 => ret = self.write_next_word(self.h, self.l),
+            0x22 => {
+                let addr = self.read_next_word();
+                ret = self.memory.write_word(addr, self.h, self.l)
+            }
             0x32 => {
                 let val = self.read_next_word();
                 ret = self.memory.write(val, self.a)
@@ -659,7 +671,8 @@ pub struct Memory {
 
 impl Memory {
     fn read(&self, index: u16) -> u8 {
-        return self.memory[usize::from(index)];
+        // only address lines A0-A13 are decoded, so memory repeats every 0x4000 bytes
+        return self.memory[usize::from(index & 0x3fff)];
     }
 
     fn read_word(&self, index: u16) -> u16 {
@@ -672,12 +685,16 @@ impl Memory {
     }
 
     fn write(&mut self, index: u16, val: u8) -> bool {
-        if index < 0x2000 || index > 0x3fff {
+        if index < 0x2000 {
             return false; //sollte false sein
-        } else {
-            self.memory[usize::from(index)] = val;
-            return true;
         }
+        // mirrored address: writes that land in ROM are ignored by the hardware
+        // (the game itself writes past the end of RAM, e.g. to 0x4017)
+        let index = index & 0x3fff;
+        if index >= 0x2000 {
+            self.memory[usize::from(index)] = val;
+        }
+        return true;
     }
 
     fn write_word(&mut self, index: u16, valH: u8, valL: u8) -> bool {
